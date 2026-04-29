@@ -1,0 +1,61 @@
+IR JUMPKIT BUILDER v2.1
+=======================
+This folder contains ONE file you need: Build-IRJumpkit.ps1
+
+EVERYTHING is embedded inside it -- no other files required.
+
+USAGE:
+------
+1. Open PowerShell as Administrator
+2. Navigate to where you extracted this file:
+   cd C:\Users\User\Downloads\ir-jumpkit
+
+3. Set execution policy for this session:
+   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
+4. Run the builder pointing at your USB drive:
+   .\Build-IRJumpkit.ps1 -TargetPath "E:\"
+
+   Or to a folder on any drive:
+   .\Build-IRJumpkit.ps1 -TargetPath "D:\IR-Jumpkit"
+
+OPTIONS:
+--------
+  -Force              Re-download everything even if already present
+  -Offline            Skip all downloads, only create structure + write scripts
+  -SkipTools "X","Y"  Skip specific tools by name
+
+EXAMPLES:
+---------
+  # Full build to USB drive E:
+  .\Build-IRJumpkit.ps1 -TargetPath "E:\"
+
+  # Re-run after partial failure (re-downloads only what's missing)
+  .\Build-IRJumpkit.ps1 -TargetPath "E:\"
+
+  # Force re-download everything
+  .\Build-IRJumpkit.ps1 -TargetPath "E:\" -Force
+
+  # Skip tools you already have
+  .\Build-IRJumpkit.ps1 -TargetPath "E:\" -SkipTools "Wireshark","Hayabusa"
+
+WHAT IT BUILDS:
+---------------
+  01_Triage\          Memory tools (winpmem, avml, LiME) + IR scripts (Windows PS1 + Linux bash)
+  02_Forensics\       EZ Tools suite, Velociraptor, disk imaging guide (FTK Imager, dcfldd)
+  03_Network\         Wireshark + tshark, BPF cheatsheets
+  04_Malware\         ProcMon, Autoruns, YARA+rules, Loki, HitmanPro, RootkitRevealer,
+                      Malwarebytes, AdwCleaner
+  05_Logs\            Chainsaw, Hayabusa
+  06_Utils\           CyberChef, 7-Zip, PuTTY, HashMyFiles, jq
+  07_Evidence\        Empty - write all evidence here during incidents
+  08_Runbooks\        Incident runbooks
+  09_Reference\       Cheatsheets, event IDs, IOC templates
+
+AV NOTE:
+--------
+  Hayabusa Sigma rules and YARA rules describe malicious behavior patterns.
+  Your AV may flag individual .yml or .yar files. This is expected and normal.
+  The tools themselves are clean. Temporarily exclude the target folder if needed:
+  Add-MpPreference -ExclusionPath "E:\IR-Jumpkit"
+  (Remove after build: Remove-MpPreference -ExclusionPath "E:\IR-Jumpkit")
