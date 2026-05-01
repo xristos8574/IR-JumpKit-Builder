@@ -4,9 +4,20 @@ This folder contains ONE file you need: Build-IRJumpkit.ps1
 
 EVERYTHING is embedded inside it -- no other files required.
 
+ADMINISTRATOR NOTE:
+-------------------
+  Administrator rights are OPTIONAL.
+  - Standard user  -> full kit minus Wireshark (everything else works fine)
+  - Administrator  -> full kit including Wireshark
+
+  The builder will ask you once at startup whether to allow installers to run.
+  It clearly shows your current elevation level and what each choice gives you.
+  No other .exe or .msi files run during the build -- only 7-Zip and Wireshark
+  installers, and only if you consent. You are welcome to review the code.
+
 USAGE:
 ------
-1. Open PowerShell as Administrator
+1. Open PowerShell (as Administrator if you want Wireshark)
 2. Navigate to where you extracted this file:
    cd C:\Users\User\Downloads\ir-jumpkit
 
@@ -41,12 +52,12 @@ EXAMPLES:
 
 WHAT IT BUILDS:
 ---------------
-  01_Triage\          Memory tools (winpmem, avml, LiME) + IR scripts (Windows PS1 + Linux bash)
-  02_Forensics\       EZ Tools suite, Velociraptor, disk imaging guide (FTK Imager, dcfldd)
-  03_Network\         Wireshark + tshark, BPF cheatsheets
-  04_Malware\         ProcMon, Autoruns, YARA+rules, Loki, HitmanPro, RootkitRevealer,
+  01_Triage\          winpmem (full + mini), avml, LiME + IR scripts (Windows PS1 + Linux bash)
+  02_Forensics\       Velociraptor, disk imaging guide (FTK Imager / dcfldd)
+  03_Network\         Wireshark + tshark (requires Admin), BPF cheatsheets
+  04_Malware\         ProcMon, Autoruns, YARA+rules, HitmanPro, RootkitRevealer,
                       Malwarebytes, AdwCleaner
-  05_Logs\            Chainsaw, Hayabusa
+  05_Logs\            Chainsaw
   06_Utils\           CyberChef, 7-Zip, PuTTY, HashMyFiles, jq
   07_Evidence\        Empty - write all evidence here during incidents
   08_Runbooks\        Incident runbooks
@@ -54,8 +65,8 @@ WHAT IT BUILDS:
 
 AV NOTE:
 --------
-  Hayabusa Sigma rules and YARA rules describe malicious behavior patterns.
-  Your AV may flag individual .yml or .yar files. This is expected and normal.
+  YARA rules describe malicious behavior patterns.
+  Your AV may flag individual .yar files. This is expected and normal.
   The tools themselves are clean. Temporarily exclude the target folder if needed:
   Add-MpPreference -ExclusionPath "E:\IR-Jumpkit"
   (Remove after build: Remove-MpPreference -ExclusionPath "E:\IR-Jumpkit")

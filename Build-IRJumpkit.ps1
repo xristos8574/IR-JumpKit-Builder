@@ -1,5 +1,4 @@
-﻿#Requires -RunAsAdministrator
-<#
+﻿<#
 .SYNOPSIS
     IR Jumpkit Builder v2.1 -- Self-contained. One file. Run once, get a full USB kit.
 
@@ -86,11 +85,11 @@ function Write-Log { param([string]$Status, [string]$Name, [string]$Detail="")
 }
 
 function Add-Result { param([string]$Cat, [string]$Name, [string]$Status,
-                             [string]$Detail="", [string]$Path="", [string]$Hash="", [string]$Ver="")
+                             [string]$Detail="", [string]$Path="", [string]$Hash="", [string]$Ver="", [string]$Signed="")
     Write-Log $Status $Name $Detail
     $Script:Results.Add([PSCustomObject]@{
         Category=$Cat; Name=$Name; Status=$Status
-        Detail=$Detail; Path=$Path; Hash=$Hash; Version=$Ver
+        Detail=$Detail; Path=$Path; Hash=$Hash; Version=$Ver; Signed=$Signed
         Time=(Get-Date -Format "HH:mm:ss")
     })
 }
@@ -98,6 +97,30 @@ function Add-Result { param([string]$Cat, [string]$Name, [string]$Status,
 function Get-SHA256 { param([string]$Path)
     if (Test-Path $Path) { return (Get-FileHash $Path -Algorithm SHA256 -EA SilentlyContinue).Hash }
     return ""
+}
+
+function Get-SignatureInfo { param([string]$Path)
+    # Returns a short human-readable signature string for PE files.
+    # Non-PE files or files that don't exist return an empty string.
+    $peExts = @('.exe','.dll','.sys','.ps1','.msi')
+    $ext = [IO.Path]::GetExtension($Path).ToLower()
+    if ($ext -notin $peExts) { return "" }
+    if (!(Test-Path $Path))   { return "" }
+    try {
+        $sig = Get-AuthenticodeSignature -FilePath $Path -EA SilentlyContinue
+        if (!$sig) { return "Not signed" }
+        switch ($sig.Status) {
+            "Valid" {
+                $cn  = ($sig.SignerCertificate.Subject -split ',')[0] -replace 'CN=','' -replace '"',''
+                $alg = $sig.SignerCertificate.SignatureAlgorithm.FriendlyName
+                return "Signed · $cn · $alg"
+            }
+            "NotSigned"    { return "Not signed" }
+            "HashMismatch" { return "Invalid (hash mismatch)" }
+            "NotTrusted"   { return "Not trusted" }
+            default        { return "Signature: $($sig.Status)" }
+        }
+    } catch { return "" }
 }
 
 function Should-Skip { param([string]$Name)
@@ -128,14 +151,60 @@ function Invoke-Download {
         Write-Host "  [....] Downloading $Label..." -ForegroundColor DarkYellow
         Invoke-WebRequest -Uri $Uri -OutFile $Dest -UseBasicParsing -ErrorAction Stop
         
-        $hash = Get-SHA256 $Dest
-        Add-Result $Cat $Label "OK" "Downloaded from $Uri" $Dest $hash
+        $hash   = Get-SHA256 $Dest
+        $signed = Get-SignatureInfo $Dest
+        Add-Result $Cat $Label "OK" "Downloaded from $Uri" $Dest $hash "" $signed
         return $true
     }
     catch {
         Write-Host "  [WARN] Download failed: $_" -ForegroundColor Red
         Add-Result $Cat $Label "FAIL" "Download failed: $_"
         return $false
+    }
+}
+
+# Two-step downloader for BleepingComputer pages that use meta-refresh to serve files.
+# Fetches the page, extracts the meta refresh URL, then delegates to Invoke-Download.
+function Invoke-BCDownload {
+    param([string]$PageUrl, [string]$Dest, [string]$Label, [string]$Cat)
+
+    if (!$Force -and (Test-Path $Dest)) {
+        Add-Result $Cat $Label "SKIP" "Already exists -- use -Force to re-download" $Dest (Get-SHA256 $Dest)
+        return $true
+    }
+    try {
+        Write-Host "  [....] Resolving BleepingComputer download for $Label..." -ForegroundColor DarkYellow
+        $page  = Invoke-WebRequest -Uri $PageUrl -UseBasicParsing -MaximumRedirection 10 -EA Stop
+        $html  = $page.Content
+        $m     = [regex]::Match($html, 'meta\s+http-equiv="refresh"[^>]+url=([^\s"'']+)', 'IgnoreCase')
+        if (!$m.Success) {
+            Add-Result $Cat $Label "FAIL" "Could not find meta-refresh download URL in BleepingComputer page ($PageUrl)"
+            return $false
+        }
+        $dlUrl = $m.Groups[1].Value.TrimEnd('"').TrimEnd("'").TrimEnd('>')
+        return Invoke-Download $dlUrl $Dest $Label $Cat
+    }
+    catch {
+        Add-Result $Cat $Label "FAIL" "Failed to resolve BleepingComputer page: $_"
+        return $false
+    }
+}
+
+# After extracting a ZIP, enumerate matching files and add each to the build report with hash + signature.
+function Add-ExtractedFiles {
+    param(
+        [string]$Folder,
+        [string]$Cat,
+        [string]$Filter  = "*.exe",
+        [string]$Ver     = "",
+        [string[]]$Also  = @()   # additional file filters, e.g. "*.html"
+    )
+    foreach ($f in (@($Filter) + $Also)) {
+        Get-ChildItem -Path $Folder -Filter $f -Recurse -EA SilentlyContinue | ForEach-Object {
+            $hash   = Get-SHA256 $_.FullName
+            $signed = Get-SignatureInfo $_.FullName
+            Add-Result $Cat $_.Name "OK" "Extracted -> $($_.FullName)" $_.FullName $hash $Ver $signed
+        }
     }
 }
 
@@ -178,15 +247,71 @@ Write-Host "  |  Offline  : $Offline" -ForegroundColor White
 Write-Host "  |  Started  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor White
 Write-Host "  +==============================================================+" -ForegroundColor DarkCyan
 
+# ============================================================
+#  ELEVATION DETECTION + INSTALLER CONSENT
+# ============================================================
+$Script:IsAdmin         = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$Script:AllowInstallers = $true   # default: Yes
+
+if (!$Offline) {
+    $adminLabel   = if ($Script:IsAdmin) { "YES (Administrator)" } else { "NO  (Standard User)" }
+    $adminColor   = if ($Script:IsAdmin) { "Green" }               else { "Yellow" }
+
+    Write-Host ""
+    Write-Host "  +-------------------------------------------------------------" -ForegroundColor Yellow
+    Write-Host "  |  INSTALLER CONSENT                                          |" -ForegroundColor Yellow
+    Write-Host "  +-------------------------------------------------------------" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Two tools require running an installer on THIS machine" -ForegroundColor White
+    Write-Host "  during the build:" -ForegroundColor White
+    Write-Host ""
+    Write-Host "    7-Zip     -- installs silently to the USB path only" -ForegroundColor Cyan
+    Write-Host "    Wireshark -- installs silently, copied to USB, then auto-" -ForegroundColor Cyan
+    Write-Host "                 uninstalled from this machine afterwards" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Running as Administrator : $adminLabel" -ForegroundColor $adminColor
+    Write-Host ""
+    Write-Host "  What you get:" -ForegroundColor White
+    Write-Host "    Admin + Yes  ->  7-Zip installed to USB  +  Wireshark staged to USB" -ForegroundColor Green
+    Write-Host "    No Admin + Yes  ->  7-Zip only  (Wireshark requires Admin)" -ForegroundColor Yellow
+    Write-Host "    No          ->  Neither installer runs; both downloaded to USB only" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  No other installers (.exe, .msi, etc.) run during the JumpKit" -ForegroundColor DarkGray
+    Write-Host "  setup. You are welcome to review the code and validate." -ForegroundColor DarkGray
+    Write-Host ""
+    do {
+        $ans = (Read-Host "  Allow installers to run? [Yes/No]").Trim()
+    } while ($ans -notmatch '^(yes|no|y|n)$')
+
+    if ($ans -match '^(no|n)$') {
+        $Script:AllowInstallers = $false
+        Write-Host ""
+        Write-Host "  [INFO] Consent declined -- no installers will run." -ForegroundColor Yellow
+        Write-Host "         Both tools will be downloaded to the USB but not executed." -ForegroundColor DarkYellow
+        Write-Host "         Most ZIP-based tools still extract via Expand-Archive." -ForegroundColor DarkYellow
+    } else {
+        if ($Script:IsAdmin) {
+            Write-Host ""
+            Write-Host "  [OK] Consent granted (Administrator) -- 7-Zip + Wireshark will run." -ForegroundColor Green
+        } else {
+            Write-Host ""
+            Write-Host "  [OK] Consent granted (Standard User) -- 7-Zip will run." -ForegroundColor Green
+            Write-Host "  [!!] Wireshark will be skipped -- re-run as Administrator to include it." -ForegroundColor Yellow
+        }
+    }
+    Write-Host ""
+}
+
 Write-Step "STEP 1 -- Pre-flight Checks"
 
-# Administrator
-if (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-    [Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Add-Result "Pre-flight" "Run As Administrator" "OK"
+# Administrator -- only required for the Wireshark installer
+if ($Script:IsAdmin) {
+    Add-Result "Pre-flight" "Run As Administrator" "OK" "Wireshark + 7-Zip installers can run"
+} elseif ($Script:AllowInstallers) {
+    Add-Result "Pre-flight" "Run As Administrator" "WARN" "Not Administrator -- Wireshark installer will be skipped. Re-run as Administrator to include Wireshark on the USB."
+    $Script:Warnings.Add("Not running as Administrator -- Wireshark will be skipped")
 } else {
-    Add-Result "Pre-flight" "Run As Administrator" "FAIL" "Re-launch PowerShell as Administrator"
-    $Script:HardFails.Add("Must run as Administrator")
+    Add-Result "Pre-flight" "Run As Administrator" "OK" "No installers selected -- Administrator not required"
 }
 
 # PowerShell version
@@ -302,7 +427,6 @@ $FolderMap = [ordered]@{
     "01_Triage\macos"                     = "macOS triage tools"
     "02_Forensics\imaging"                = "Disk imaging (FTK Imager, dcfldd)"
     "02_Forensics\memory"                 = "Memory acquisition (winpmem, avml, LiME)"
-    "02_Forensics\artefacts\EZTools"      = "Eric Zimmerman Tools suite"
     "02_Forensics\artefacts\Velociraptor" = "Velociraptor DFIR platform"
     "03_Network\Wireshark"                = "Wireshark + tshark portable"
     "03_Network\pcap_filters"             = "BPF filter cheatsheets"
@@ -310,13 +434,11 @@ $FolderMap = [ordered]@{
     "04_Malware\Autoruns"                 = "Autoruns (persistence scanner)"
     "04_Malware\yara\bin"                 = "YARA engine"
     "04_Malware\yara\rules"               = "YARA community rules"
-    "04_Malware\Loki"                     = "Loki IOC and YARA scanner"
     "04_Malware\HitmanPro"                = "HitmanPro second-opinion malware scanner (Sophos)"
     "04_Malware\RootkitRevealer"          = "RootkitRevealer - registry/filesystem rootkit detector"
     "04_Malware\Malwarebytes"             = "Malwarebytes Anti-Malware"
     "04_Malware\AdwCleaner"               = "AdwCleaner - adware and PUP remover (Malwarebytes)"
     "05_Logs\Chainsaw"                    = "Chainsaw Windows event log hunter"
-    "05_Logs\Hayabusa"                    = "Hayabusa DFIR timeline"
     "06_Utils\CyberChef"                  = "CyberChef offline"
     "06_Utils\7zip"                       = "7-Zip portable"
     "06_Utils\putty"                      = "PuTTY + PSCP"
@@ -355,22 +477,42 @@ if (!(Should-Skip "7zip")) {
             $inst = Join-Path $TempDir $info.FileName
             if (Invoke-Download $info.Url $inst "7-Zip installer" "Utils") {
                 $szDir = Join-Path $Root "06_Utils\7zip"
-                Start-Process -FilePath $inst -ArgumentList "/S /D=$szDir" -Wait -NoNewWindow
-                if (Test-Path $szExe) {
-                    Add-Result "Utils" "7-Zip (installed)" "OK" "Extracted to $szDir" $szExe (Get-SHA256 $szExe) $info.Version
-                    $env:Path = "$szDir;$env:Path"
-                } else { Add-Result "Utils" "7-Zip (install)" "FAIL" "Installer ran but 7z.exe not found" }
+                if ($Script:AllowInstallers) {
+                    Start-Process -FilePath $inst -ArgumentList "/S /D=$szDir" -Wait -NoNewWindow
+                    if (Test-Path $szExe) {
+                        Add-Result "Utils" "7-Zip (installed)" "OK" "Installed to $szDir" $szExe (Get-SHA256 $szExe) $info.Version
+                        $env:Path = "$szDir;$env:Path"
+                    } else { Add-Result "Utils" "7-Zip (install)" "FAIL" "Installer ran but 7z.exe not found" }
+                } else {
+                    Add-Result "Utils" "7-Zip installer" "SKIP" "Downloaded to USB but not run (consent declined). ZIP tools will use PowerShell Expand-Archive as fallback." $inst (Get-SHA256 $inst) $info.Version
+                }
             }
         }
     } else { Add-Result "Utils" "7-Zip" "SKIP" "Already present" $szExe }
 }
 
 # ---- winpmem (Windows memory acquisition) ------------------------------------
+# Downloads three variants:
+#   go-winpmem (full, signed) -- recommended for production
+#   winpmem_mini_x64           -- lightweight, signed, good for constrained environments
+#   winpmem_mini_x86           -- 32-bit signed variant
 if (!(Should-Skip "winpmem")) {
-    $dest = Join-Path $Root "02_Forensics\memory\winpmem.exe"
-    $info = Get-GitHubLatest "Velocidex/WinPmem" "winpmem.*\.exe$"
-    if ($info) { Invoke-Download $info.Url $dest "winpmem" "Memory" | Out-Null }
-    else { Add-Result "Memory" "winpmem" "FAIL" "Could not resolve GitHub release" }
+    $memDir = Join-Path $Root "02_Forensics\memory"
+
+    # Full signed build (go-winpmem -- new Golang userspace + signed drivers)
+    $infoFull = Get-GitHubLatest "Velocidex/WinPmem" "go-winpmem.*signed\.exe$"
+    if ($infoFull) { Invoke-Download $infoFull.Url (Join-Path $memDir $infoFull.FileName) "winpmem (full signed)" "Memory" | Out-Null }
+    else { Add-Result "Memory" "winpmem (full)" "FAIL" "Could not resolve GitHub release" }
+
+    # Mini x64 -- lightweight and signed
+    $infoM64 = Get-GitHubLatest "Velocidex/WinPmem" "winpmem_mini_x64.*\.exe$"
+    if ($infoM64) { Invoke-Download $infoM64.Url (Join-Path $memDir "winpmem_mini_x64.exe") "winpmem_mini x64 (signed)" "Memory" | Out-Null }
+    else { Add-Result "Memory" "winpmem_mini_x64" "FAIL" "Could not resolve GitHub release" }
+
+    # Mini x86 -- 32-bit signed variant
+    $infoM86 = Get-GitHubLatest "Velocidex/WinPmem" "winpmem_mini_x86.*\.exe$"
+    if ($infoM86) { Invoke-Download $infoM86.Url (Join-Path $memDir "winpmem_mini_x86.exe") "winpmem_mini x86 (signed)" "Memory" | Out-Null }
+    else { Add-Result "Memory" "winpmem_mini_x86" "FAIL" "Could not resolve GitHub release" }
 }
 
 # ---- avml (Linux memory acquisition -- static binary) ------------------------
@@ -416,19 +558,6 @@ sudo rmmod lime
     } else { Add-Result "Memory" "LiME" "SKIP" "Already present. Use -Force to re-clone." $limeDir }
 }
 
-# ---- Eric Zimmerman Tools (EZ Tools) ----------------------------------------
-if (!(Should-Skip "EZTools")) {
-    $ezDir    = Join-Path $Root "02_Forensics\artefacts\EZTools"
-    $ezScript = Join-Path $TempDir "Get-ZimmermanTools.ps1"
-    if (Invoke-Download "https://raw.githubusercontent.com/EricZimmerman/Get-ZimmermanTools/master/Get-ZimmermanTools.ps1" `
-        $ezScript "EZ Tools installer script" "Forensics") {
-        Write-Host "  [BUILD] Running Get-ZimmermanTools.ps1 ..." -ForegroundColor DarkYellow
-        & powershell.exe -ExecutionPolicy Bypass -File $ezScript -Dest $ezDir -NetVersion 4 2>$null
-        $ezCount = (Get-ChildItem $ezDir -Recurse -File -EA SilentlyContinue).Count
-        if ($ezCount -gt 0) { Add-Result "Forensics" "EZ Tools Suite ($ezCount files)" "OK" "Downloaded to $ezDir" $ezDir }
-        else { Add-Result "Forensics" "EZ Tools Suite" "FAIL" "Installer ran but no files found in $ezDir" }
-    }
-}
 
 # ---- Velociraptor standalone -------------------------------------------------
 if (!(Should-Skip "Velociraptor")) {
@@ -459,32 +588,38 @@ if (!(Should-Skip "Wireshark")) {
     }
 
     if (!$wsFound) {
-        # Download installer, install silently, copy, uninstall
+        # Download installer, then install silently, copy, uninstall (only if consent given)
         $wsInstaller = Join-Path $TempDir "Wireshark-installer.exe"
         if (Invoke-Download "https://www.wireshark.org/download/win64/Wireshark-latest-x64.exe" $wsInstaller "Wireshark installer" "Network") {
-            Write-Host "  [BUILD] Installing Wireshark silently..." -ForegroundColor DarkYellow
-            $wsInstallDir = Join-Path $env:ProgramFiles "Wireshark"
-            Start-Process -FilePath $wsInstaller -ArgumentList "/S /desktopicon=no /quicklaunchicon=no" -Wait -NoNewWindow
+            if ($Script:AllowInstallers -and $Script:IsAdmin) {
+                Write-Host "  [BUILD] Installing Wireshark silently..." -ForegroundColor DarkYellow
+                $wsInstallDir = Join-Path $env:ProgramFiles "Wireshark"
+                Start-Process -FilePath $wsInstaller -ArgumentList "/S /desktopicon=no /quicklaunchicon=no" -Wait -NoNewWindow
 
-            Start-Sleep -Seconds 15   # give installer a moment to finish file writes
+                Start-Sleep -Seconds 15   # give installer a moment to finish file writes
 
-            if (Test-Path $wsInstallDir) {
-                Write-Host "  [BUILD] Copying Wireshark folder to USB..." -ForegroundColor DarkYellow
-                Copy-Item -Path "$wsInstallDir\*" -Destination $wsTarget -Recurse -Force
-                $tshark = Join-Path $wsTarget "tshark.exe"
-                if (Test-Path $tshark) {
-                    Add-Result "Network" "Wireshark + tshark (installed->copied)" "OK" "Installed silently, copied, will uninstall" $tshark (Get-SHA256 $tshark)
-                    $wsFound = $true
+                if (Test-Path $wsInstallDir) {
+                    Write-Host "  [BUILD] Copying Wireshark folder to USB..." -ForegroundColor DarkYellow
+                    Copy-Item -Path "$wsInstallDir\*" -Destination $wsTarget -Recurse -Force
+                    $tshark = Join-Path $wsTarget "tshark.exe"
+                    if (Test-Path $tshark) {
+                        Add-Result "Network" "Wireshark + tshark (installed->copied)" "OK" "Installed silently, copied, will uninstall" $tshark (Get-SHA256 $tshark)
+                        $wsFound = $true
+                    }
+                    # Uninstall
+                    Write-Host "  [BUILD] Uninstalling Wireshark from this machine..." -ForegroundColor DarkYellow
+                    $wsUninstall = Join-Path $wsInstallDir "uninstall.exe"
+                    if (Test-Path $wsUninstall) {
+                        Start-Process -FilePath $wsUninstall -ArgumentList "/S" -Wait -NoNewWindow
+                        Add-Result "Network" "Wireshark (uninstalled from build machine)" "OK" "Build machine is clean"
+                    }
+                } else {
+                    Add-Result "Network" "Wireshark" "FAIL" "Installer ran but $wsInstallDir not found"
                 }
-                # Uninstall
-                Write-Host "  [BUILD] Uninstalling Wireshark from this machine..." -ForegroundColor DarkYellow
-                $wsUninstall = Join-Path $wsInstallDir "uninstall.exe"
-                if (Test-Path $wsUninstall) {
-                    Start-Process -FilePath $wsUninstall -ArgumentList "/S" -Wait -NoNewWindow
-                    Add-Result "Network" "Wireshark (uninstalled from build machine)" "OK" "Build machine is clean"
-                }
+            } elseif ($Script:AllowInstallers -and !$Script:IsAdmin) {
+                Add-Result "Network" "Wireshark installer" "SKIP" "Consent given but not running as Administrator -- Wireshark requires Admin to install to Program Files. Re-run as Administrator to include Wireshark on the USB." $wsInstaller (Get-SHA256 $wsInstaller)
             } else {
-                Add-Result "Network" "Wireshark" "FAIL" "Installer ran but $wsInstallDir not found"
+                Add-Result "Network" "Wireshark installer" "SKIP" "Downloaded but not run (consent declined). Re-run and answer Yes as Administrator to include Wireshark on the USB." $wsInstaller (Get-SHA256 $wsInstaller)
             }
         }
     }
@@ -518,7 +653,7 @@ if (!(Should-Skip "ProcMon")) {
     $zip  = Join-Path $TempDir "ProcessMonitor.zip"
     if (Invoke-Download "https://download.sysinternals.com/files/ProcessMonitor.zip" $zip "Process Monitor" "Malware") {
         Expand-Auto $zip $dest
-        Add-Result "Malware" "ProcMon (extracted)" "OK" "Real-time file, registry and process activity monitor. Extracted to $dest" $dest
+        Add-ExtractedFiles $dest "Malware"
     }
 }
 
@@ -528,7 +663,7 @@ if (!(Should-Skip "Autoruns")) {
     $zip  = Join-Path $TempDir "Autoruns.zip"
     if (Invoke-Download "https://download.sysinternals.com/files/Autoruns.zip" $zip "Autoruns" "Malware") {
         Expand-Auto $zip $dest
-        Add-Result "Malware" "Autoruns (extracted)" "OK" "Extracted to $dest" $dest
+        Add-ExtractedFiles $dest "Malware"
     }
 }
 
@@ -541,7 +676,7 @@ if (!(Should-Skip "YARA")) {
         $zip = Join-Path $TempDir $info.FileName
         if (Invoke-Download $info.Url $zip "YARA engine (Windows)" "Malware") {
             Expand-Auto $zip "$yaraDir\bin"
-            Add-Result "Malware" "YARA (extracted)" "OK" "Bin at $yaraDir\bin" "" "" $info.Version
+            Add-ExtractedFiles "$yaraDir\bin" "Malware" -Ver $info.Version
         }
     }
     # Rules: Neo23x0/signature-base (Florian Roth community rules)
@@ -557,24 +692,12 @@ if (!(Should-Skip "YARA")) {
 }
 
 
-# ---- Loki IOC Scanner (open-source, YARA + IOC + hash based) ----------------
-if (!(Should-Skip "Loki")) {
-    $lokiDir = Join-Path $Root "04_Malware\Loki"
-    $info    = Get-GitHubLatest "Neo23x0/Loki" "loki_.*\.zip$"
-    if ($info) {
-        $zip = Join-Path $TempDir $info.FileName
-        if (Invoke-Download $info.Url $zip "Loki IOC scanner" "Malware") {
-            Expand-Auto $zip $lokiDir
-            Add-Result "Malware" "Loki IOC Scanner (extracted)" "OK" "Run loki.exe on suspect host. Auto-updates IOC DB on first run." $lokiDir "" $info.Version
-        }
-    } else { Add-Result "Malware" "Loki IOC Scanner" "FAIL" "Could not resolve GitHub release" }
-}
 
 # ---- HitmanPro (Sophos -- second-opinion scanner) ----------------------------
 if (!(Should-Skip "HitmanPro")) {
     $hmDir = Join-Path $Root "04_Malware\HitmanPro"
-    Invoke-Download "https://www.bleepingcomputer.com/download/hitmanpro/dl/176/" (Join-Path $hmDir "hitmanpro_x64.exe") "HitmanPro 64-bit" "Malware" | Out-Null
-    Invoke-Download "https://www.bleepingcomputer.com/download/hitmanpro/dl/175/" (Join-Path $hmDir "hitmanpro.exe")      "HitmanPro 32-bit" "Malware" | Out-Null
+    Invoke-BCDownload "https://www.bleepingcomputer.com/download/hitmanpro/dl/176/" (Join-Path $hmDir "hitmanpro_x64.exe") "HitmanPro 64-bit" "Malware" | Out-Null
+    Invoke-BCDownload "https://www.bleepingcomputer.com/download/hitmanpro/dl/175/" (Join-Path $hmDir "hitmanpro.exe")      "HitmanPro 32-bit" "Malware" | Out-Null
 @"
 # HitmanPro -- Quick Start (Sophos second-opinion scanner)
 #
@@ -596,7 +719,7 @@ if (!(Should-Skip "RootkitRevealer")) {
     $zip  = Join-Path $TempDir "RootkitRevealer.zip"
     if (Invoke-Download "https://download.sysinternals.com/files/RootkitRevealer.zip" $zip "RootkitRevealer" "Malware") {
         Expand-Auto $zip $dest
-        Add-Result "Malware" "RootkitRevealer (extracted)" "OK" "Scans registry and filesystem for rootkit discrepancies. Extracted to $dest" $dest
+        Add-ExtractedFiles $dest "Malware"
     }
 }
 
@@ -620,7 +743,7 @@ if (!(Should-Skip "Malwarebytes")) {
 # ---- AdwCleaner (Malwarebytes) -----------------------------------------------
 if (!(Should-Skip "AdwCleaner")) {
     $dest = Join-Path $Root "04_Malware\AdwCleaner\adwcleaner.exe"
-    Invoke-Download "https://www.bleepingcomputer.com/download/adwcleaner/dl/382/" $dest "AdwCleaner" "Malware" | Out-Null
+    Invoke-BCDownload "https://www.bleepingcomputer.com/download/adwcleaner/dl/382/" $dest "AdwCleaner" "Malware" | Out-Null
 @"
 # AdwCleaner -- Quick Start (Malwarebytes adware/PUP remover)
 #
@@ -642,23 +765,11 @@ if (!(Should-Skip "Chainsaw")) {
         $zip = Join-Path $TempDir $info.FileName
         if (Invoke-Download $info.Url $zip "Chainsaw" "Logs") {
             Expand-Auto $zip $dest
-            Add-Result "Logs" "Chainsaw (extracted)" "OK" "Extracted to $dest" $dest "" $info.Version
+            Add-ExtractedFiles $dest "Logs" -Ver $info.Version
         }
     } else { Add-Result "Logs" "Chainsaw" "FAIL" "Could not resolve GitHub release" }
 }
 
-# ---- Hayabusa ----------------------------------------------------------------
-if (!(Should-Skip "Hayabusa")) {
-    $dest = Join-Path $Root "05_Logs\Hayabusa"
-    $info = Get-GitHubLatest "Yamato-Security/hayabusa" "hayabusa-.*-win-x64\.zip$"
-    if ($info) {
-        $zip = Join-Path $TempDir $info.FileName
-        if (Invoke-Download $info.Url $zip "Hayabusa" "Logs") {
-            Expand-Auto $zip $dest
-            Add-Result "Logs" "Hayabusa (extracted)" "OK" "Extracted to $dest. AV may flag Sigma rule YMLs -- this is expected." $dest "" $info.Version
-        }
-    } else { Add-Result "Logs" "Hayabusa" "FAIL" "Could not resolve GitHub release" }
-}
 
 # ---- CyberChef offline -------------------------------------------------------
 if (!(Should-Skip "CyberChef")) {
@@ -668,7 +779,7 @@ if (!(Should-Skip "CyberChef")) {
         $zip = Join-Path $TempDir $info.FileName
         if (Invoke-Download $info.Url $zip "CyberChef (offline)" "Utils") {
             Expand-Auto $zip $dest
-            Add-Result "Utils" "CyberChef (extracted)" "OK" "Open CyberChef.html in any browser -- no internet needed" $dest "" $info.Version
+            Add-ExtractedFiles $dest "Utils" -Filter "*.html" -Ver $info.Version
         }
     } else { Add-Result "Utils" "CyberChef" "FAIL" "Could not resolve GitHub release" }
 }
@@ -693,7 +804,7 @@ if (!(Should-Skip "HashMyFiles")) {
     $zip  = Join-Path $TempDir "HashMyFiles.zip"
     if (Invoke-Download "https://www.nirsoft.net/utils/hashmyfiles-x64.zip" $zip "HashMyFiles" "Utils") {
         Expand-Auto $zip $dest
-        Add-Result "Utils" "HashMyFiles (extracted)" "OK" "Extracted to $dest" $dest
+        Add-ExtractedFiles $dest "Utils"
     }
 }
 
@@ -2079,7 +2190,6 @@ Add-Result "Reference" "Imaging Tools Note" "OK" "Manual download instructions w
 | Traffic Capture     | tshark.exe            | 03_Network\Wireshark\tshark.exe       |
 | Traffic Capture     | tcpdump (Linux/macOS) | Built into OS                         |
 | Log Analysis        | Chainsaw              | 05_Logs\Chainsaw\                     |
-| Log Timeline        | Hayabusa              | 05_Logs\Hayabusa\                     |
 | Decode/Transform    | CyberChef             | 06_Utils\CyberChef\CyberChef.html     |
 | JSON processing     | jq                    | 06_Utils\jq\                          |
 | SSH / SCP           | PuTTY / PSCP          | 06_Utils\putty\                       |
@@ -2196,6 +2306,7 @@ $Script:Results | Group-Object Category | ForEach-Object {
         if ($_.Detail)  { $null = $sb.AppendLine("             $($_.Detail)") }
         if ($_.Path)    { $null = $sb.AppendLine("             Path: $($_.Path)") }
         if ($_.Hash)    { $null = $sb.AppendLine("             SHA256: $($_.Hash)") }
+        if ($_.Signed)  { $null = $sb.AppendLine("             Signed: $($_.Signed)") }
         if ($_.Version) { $null = $sb.AppendLine("             Version: $($_.Version)") }
     }
 }
@@ -2226,7 +2337,8 @@ foreach ($r in $Script:Results) {
     $bg  = switch ($r.Status) {"OK"{"#f0fff0"} "WARN"{"#fffbe6"} "FAIL"{"#fff0f0"} "SKIP"{"#f5f5f5"} "COMPILE"{"#f5eeff"} default{"#fff"}}
     $fg  = switch ($r.Status) {"OK"{"#1a7a1a"} "WARN"{"#8a6200"} "FAIL"{"#8a1a1a"} "SKIP"{"#555"} "COMPILE"{"#6a2a8a"} default{"#333"}}
     $ico = switch ($r.Status) {"OK"{"[OK]"} "WARN"{"[!!]"} "FAIL"{"[XX]"} "SKIP"{"[--]"} "COMPILE"{"[cc]"} default{"[..]"}}
-    $rowsHtml += "<tr style='background:$bg'><td style='color:$fg;font-weight:600'>$ico $($r.Status)</td><td>$($r.Category)</td><td><strong>$($r.Name)</strong></td><td style='font-size:12px;color:#555'>$($r.Detail)</td><td style='font-size:11px;font-family:monospace;color:#888'>$($r.Version)</td><td style='font-size:10px;font-family:monospace;color:#aaa;word-break:break-all'>$($r.Hash)</td><td>$($r.Time)</td></tr>`n"
+    $signedColor = if ($r.Signed -like "Signed*") { "#1a7a1a" } elseif ($r.Signed -like "Not signed") { "#888" } elseif ($r.Signed -like "Invalid*") { "#c0392b" } else { "#888" }
+    $rowsHtml += "<tr style='background:$bg'><td style='color:$fg;font-weight:600'>$ico $($r.Status)</td><td>$($r.Category)</td><td><strong>$($r.Name)</strong></td><td style='font-size:12px;color:#555'>$($r.Detail)</td><td style='font-size:11px;font-family:monospace;color:#888'>$($r.Version)</td><td style='font-size:10px;font-family:monospace;color:#aaa;word-break:break-all'>$($r.Hash)</td><td style='font-size:11px;color:$signedColor'>$($r.Signed)</td><td>$($r.Time)</td></tr>`n"
 }
 
 $failBox = if ($cntFail -gt 0) { "<div style='background:#fff0f0;border:1px solid #f08080;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px'><strong>[!!] $cntFail tool(s) failed.</strong> Re-run with <code>-Force</code> for specific tools.</div>" } else { "" }
@@ -2261,7 +2373,7 @@ tr:hover td{filter:brightness(0.97)}
 </div>
 $failBox$warnBox
 <h2>All Results</h2>
-<table><thead><tr><th>Status</th><th>Category</th><th>Name</th><th>Detail</th><th>Version</th><th>SHA-256</th><th>Time</th></tr></thead>
+<table><thead><tr><th>Status</th><th>Category</th><th>Name</th><th>Detail</th><th>Version</th><th>SHA-256</th><th>Signed</th><th>Time</th></tr></thead>
 <tbody>$rowsHtml</tbody></table>
 <p style='font-size:11px;color:#aaa;margin-top:24px'>Generated by IR Jumpkit Builder v$BuilderVersion</p>
 </body></html>

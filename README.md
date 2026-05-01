@@ -27,10 +27,9 @@ A self-contained PowerShell builder that downloads, organises, and embeds a comp
     - [isolate\_host.sh](#isolate_hostsh)
     - [hash\_files.sh](#hash_filessh)
   - [02 · Forensics](#02--forensics)
-    - [winpmem](#winpmem)
+    - [winpmem (full + mini variants)](#winpmem)
     - [avml](#avml)
     - [LiME](#lime)
-    - [EZ Tools Suite](#ez-tools-suite)
     - [Velociraptor](#velociraptor)
     - [Disk Imaging Guide](#disk-imaging-guide)
   - [03 · Network](#03--network)
@@ -39,14 +38,12 @@ A self-contained PowerShell builder that downloads, organises, and embeds a comp
     - [ProcMon](#procmon)
     - [Autoruns](#autoruns)
     - [YARA](#yara)
-    - [Loki](#loki)
     - [HitmanPro](#hitmanpro)
     - [RootkitRevealer](#rootkitrevealer)
     - [Malwarebytes](#malwarebytes)
     - [AdwCleaner](#adwcleaner)
   - [05 · Log Analysis](#05--log-analysis)
     - [Chainsaw](#chainsaw)
-    - [Hayabusa](#hayabusa)
   - [06 · Utilities](#06--utilities)
     - [CyberChef](#cyberchef)
     - [7-Zip](#7-zip)
@@ -55,6 +52,8 @@ A self-contained PowerShell builder that downloads, organises, and embeds a comp
     - [jq](#jq)
 - [Order of Operations](#order-of-operations)
 - [Evidence Folder](#evidence-folder)
+- [Standalone Scripts (Repository)](#standalone-scripts-repository)
+- [Build Report](#build-report)
 
 ---
 
@@ -131,10 +130,18 @@ The author and contributors **accept no liability** for any damage, data loss, o
 
 ## Quick Start
 
-**Requirements:** Windows, PowerShell 5.1+, internet connection, run as Administrator.
+**Requirements:** Windows, PowerShell 5.1+, internet connection.
+
+> **Administrator rights are optional.** The builder runs fine as a standard user — you still get every tool except Wireshark. Wireshark cannot be portably extracted without running its installer, which requires Administrator. Run as Administrator if you want Wireshark staged on the USB.
+
+| Scenario | What you get |
+|---|---|
+| Run as **Administrator** → answer **Yes** to installer consent | Full kit — 7-Zip + Wireshark included |
+| Run as **Standard User** → answer **Yes** | Everything except Wireshark — 7-Zip installs to USB path |
+| Answer **No** to installer consent (any elevation) | Everything except Wireshark — both installers downloaded but not run |
 
 ```powershell
-# 1. Open PowerShell as Administrator
+# 1. Open PowerShell (as Administrator if you want Wireshark)
 
 # 2. Set execution policy for this session
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
@@ -146,7 +153,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\Build-IRJumpkit.ps1 -TargetPath "D:\IR-Jumpkit-Test"
 ```
 
-The builder will display live progress for every download and write a full HTML build report to `00_START_HERE\BUILD_REPORT.html` when done.
+The builder will prompt you once about installer consent before anything runs, then display live progress for every download. A full HTML build report is written to `00_START_HERE\BUILD_REPORT.html` when done.
 
 ---
 
@@ -189,11 +196,12 @@ IR-Jumpkit/
 │
 ├── 02_Forensics/
 │   ├── memory/
-│   │   ├── winpmem.exe              ← Windows memory acquisition
-│   │   ├── avml                     ← Linux memory acquisition
-│   │   └── LiME/                    ← Linux kernel module (compile on target)
+│   │   ├── go-winpmem_amd64_*_signed.exe  ← Full signed build (recommended)
+│   │   ├── winpmem_mini_x64.exe           ← Mini signed variant (64-bit, lightweight)
+│   │   ├── winpmem_mini_x86.exe           ← Mini signed variant (32-bit)
+│   │   ├── avml                           ← Linux memory acquisition
+│   │   └── LiME/                          ← Linux kernel module (compile on target)
 │   ├── artefacts/
-│   │   ├── EZTools/                 ← Eric Zimmerman Tools (full suite)
 │   │   └── Velociraptor/            ← Velociraptor agent
 │   └── imaging/
 │       └── IMAGING_TOOLS.md         ← FTK Imager / dcfldd guide
@@ -211,15 +219,13 @@ IR-Jumpkit/
 │   ├── yara/
 │   │   ├── bin/                     ← YARA engine
 │   │   └── rules/                   ← Neo23x0 signature-base rules
-│   ├── Loki/                        ← IOC + YARA scanner
 │   ├── HitmanPro/                   ← Second-opinion cloud scanner (Sophos)
 │   ├── RootkitRevealer/             ← Rootkit detection
 │   ├── Malwarebytes/                ← Malware removal
 │   └── AdwCleaner/                  ← Adware / PUP removal
 │
 ├── 05_Logs/
-│   ├── Chainsaw/                    ← Windows event log hunter
-│   └── Hayabusa/                    ← DFIR timeline generator
+│   └── Chainsaw/                    ← Windows event log hunter
 │
 ├── 06_Utils/
 │   ├── CyberChef/                   ← Offline decode/transform
@@ -402,13 +408,27 @@ bash hash_files.sh /mnt/usb/07_Evidence/ custody_hashes.csv
 
 #### winpmem
 
-**Platform:** Windows | **Location:** `02_Forensics\memory\winpmem.exe`
+**Platform:** Windows | **Location:** `02_Forensics\memory\`
 
-**Purpose:** Dumps physical memory from a live Windows system. Run this **before anything else** — memory is volatile and overwritten constantly.
+The builder downloads **three variants** of winpmem, all sourced from the [Velocidex/WinPmem](https://github.com/Velocidex/WinPmem) GitHub releases:
+
+| File | Use case |
+|---|---|
+| `go-winpmem_amd64_*_signed.exe` | **Recommended.** Full signed build — use on any modern 64-bit Windows host |
+| `winpmem_mini_x64.exe` | Lightweight signed variant for constrained environments (64-bit) |
+| `winpmem_mini_x86.exe` | Lightweight signed variant for 32-bit systems or older hardware |
+
+**Purpose:** Dumps physical memory from a live Windows system. Run this **before anything else** — memory is volatile and overwritten constantly. All variants are Authenticode-signed (visible in the Signed column of the build report).
 
 ```powershell
-# Acquire memory to USB (always point output at the USB)
-.\winpmem.exe E:\07_Evidence\HOST01_mem.raw
+# Recommended: full signed build — acquire memory to USB
+.\go-winpmem_amd64_*_signed.exe E:\07_Evidence\HOST01_mem.raw
+
+# Lightweight variant (smaller binary, faster load)
+.\winpmem_mini_x64.exe E:\07_Evidence\HOST01_mem.raw
+
+# 32-bit target host
+.\winpmem_mini_x86.exe E:\07_Evidence\HOST01_mem.raw
 
 # Hash immediately after acquisition
 certutil -hashfile E:\07_Evidence\HOST01_mem.raw SHA256
@@ -457,40 +477,6 @@ sudo rmmod lime
 ```
 
 > See `02_Forensics\memory\LiME\COMPILE.txt` for full instructions.
-
----
-
-#### EZ Tools Suite
-
-**Platform:** Windows | **Location:** `02_Forensics\artefacts\EZTools\`
-
-**Purpose:** Eric Zimmerman's comprehensive suite of Windows artefact parsers. Covers registry hives, event logs, prefetch, LNK files, shellbags, jump lists, and much more. Industry standard for Windows DFIR.
-
-Key tools in the suite:
-
-| Tool | What it parses |
-|---|---|
-| `MFTECmd.exe` | NTFS Master File Table |
-| `PECmd.exe` | Prefetch files |
-| `LECmd.exe` | LNK (shortcut) files |
-| `JLECmd.exe` | Jump lists |
-| `SBECmd.exe` | Shellbags |
-| `RECmd.exe` | Registry hives |
-| `EvtxECmd.exe` | Windows event logs (EVTX → CSV/JSON) |
-| `RBCmd.exe` | Recycle bin |
-| `AppCompatCacheParser.exe` | Shimcache |
-| `AmcacheParser.exe` | Amcache.hve |
-
-```powershell
-# Parse prefetch files from evidence folder
-.\PECmd.exe -d E:\07_Evidence\HOST01\nonvolatile\prefetch\ --csv E:\07_Evidence\HOST01\parsed\
-
-# Parse exported registry hive
-.\RECmd.exe -f E:\07_Evidence\HOST01\nonvolatile\registry\SOFTWARE.hiv --csv E:\07_Evidence\HOST01\parsed\
-
-# Parse EVTX event logs
-.\EvtxECmd.exe -d E:\07_Evidence\HOST01\nonvolatile\eventlogs\ --csv E:\07_Evidence\HOST01\parsed\ --csvf evtx_parsed.csv
-```
 
 ---
 
@@ -622,27 +608,6 @@ Disk imaging tools (FTK Imager, dcfldd, dd, Guymager) cannot be automatically do
 
 ---
 
-#### Loki
-
-**Platform:** Windows | **Location:** `04_Malware\Loki\`
-
-**Purpose:** IOC and YARA scanner that checks files against a database of known-malicious hashes, filenames, YARA rules, and C2 indicators. The `--update` flag pulls the latest IOC database.
-
-```powershell
-# Scan the suspect host's C drive (run from USB)
-.\loki.exe --path C:\ --log E:\07_Evidence\HOST01_loki.log
-
-# Update IOC database before scanning (requires internet)
-.\loki.exe --update
-
-# Scan only specific directory, exclude noise
-.\loki.exe --path C:\Users\ --log E:\07_Evidence\loki_users.log --noprocscan
-```
-
-**Expected output:** Colour-coded log with `ALERT` (high confidence IOC match), `WARNING` (suspicious), and `NOTICE` (interesting) findings. ALERT = immediate investigation.
-
----
-
 #### HitmanPro
 
 **Platform:** Windows | **Location:** `04_Malware\HitmanPro\`
@@ -743,29 +708,6 @@ Disk imaging tools (FTK Imager, dcfldd, dd, Guymager) cannot be automatically do
 
 ---
 
-#### Hayabusa
-
-**Platform:** Windows | **Location:** `05_Logs\Hayabusa\`
-
-**Purpose:** Windows event log DFIR timeline generator with a large built-in Sigma ruleset. Produces a human-readable or machine-parseable timeline from EVTX files, highlighting attacker TTPs mapped to MITRE ATT&CK.
-
-```powershell
-# Generate timeline from exported event logs (CSV output)
-.\hayabusa.exe csv-timeline -d E:\07_Evidence\HOST01\nonvolatile\eventlogs\ -o E:\07_Evidence\HOST01_hayabusa_timeline.csv
-
-# Quick triage — summary of findings only
-.\hayabusa.exe logon-summary -d E:\07_Evidence\HOST01\nonvolatile\eventlogs\
-
-# Live system scan (run on the suspect host)
-.\hayabusa.exe csv-timeline -l -o E:\07_Evidence\HOST01_hayabusa_live.csv
-```
-
-> ℹ️ AV may flag Sigma rule `.yml` files inside the `rules/` folder. This is expected — the rules describe malicious behaviour patterns for detection, not for execution.
-
-**Expected output:** Timeline CSV with columns for timestamp, computer, channel, event ID, Sigma rule name, severity, and MITRE ATT&CK technique. Open in Excel or Timeline Explorer (from EZ Tools) for analysis.
-
----
-
 ### 06 · Utilities
 
 ---
@@ -858,12 +800,12 @@ Follow this sequence on a live host to preserve evidence integrity:
 | **1** | 🔴 **Capture memory first** — it is the most volatile artefact | `winpmem.exe` / `avml` |
 | **2** | Run quick volatile triage | `triage_collect.ps1` / `collect_artifacts.sh` |
 | **3** | Capture live network traffic | `tshark.exe` / `tcpdump` |
-| **4** | Scan for active threats (without removing) | `Loki`, `ProcMon`, `Autoruns` |
+| **4** | Scan for active threats (without removing) | `ProcMon`, `Autoruns`, `YARA` |
 | **5** | Isolate the host from the network | `isolate_host.ps1` / `isolate_host.sh` |
 | **6** | Full non-volatile artefact collection | `collect_artifacts.ps1` |
 | **7** | Disk imaging | FTK Imager / dcfldd — see `02_Forensics\imaging\IMAGING_TOOLS.md` |
 | **8** | Hash all collected evidence | `hash_files.ps1` / `hash_files.sh` |
-| **9** | Deep analysis (off-scene, on analyst machine) | EZ Tools, Chainsaw, Hayabusa, YARA |
+| **9** | Deep analysis (off-scene, on analyst machine) | Chainsaw, YARA, Velociraptor |
 | **10** | Remediation (only after full collection) | Malwarebytes, AdwCleaner, HitmanPro |
 
 > 🔑 **Golden rule:** Never write evidence to the suspect host's own disk. All output goes to `07_Evidence\` on the USB.
@@ -883,6 +825,77 @@ Recommended naming convention for evidence subfolders:
 ├── 2024-01-15_HOST01_capture.pcap  ← network capture
 └── 2024-01-15_HOST01_chainsaw.csv  ← log analysis output
 ```
+
+---
+
+## Standalone Scripts (Repository)
+
+The IR scripts embedded inside the builder are also available as standalone files in this repository under `scripts/`. This lets you review, modify, or version-control them independently — and makes it easy to push them to your own fork without running the builder first.
+
+```
+scripts/
+├── windows/
+│   ├── triage_collect.ps1       ← Fast volatile triage (run first on live Windows host)
+│   ├── collect_artifacts.ps1    ← Full non-volatile artefact collection
+│   ├── isolate_host.ps1         ← Firewall-based host isolation
+│   └── hash_files.ps1           ← SHA-256 + MD5 chain-of-custody hasher
+└── linux/
+    ├── collect_artifacts.sh     ← Full Linux triage + non-volatile collection
+    ├── isolate_host.sh          ← iptables-based host isolation (IPv4 + IPv6)
+    └── hash_files.sh            ← SHA-256 + MD5 hasher for Linux
+```
+
+These files are **identical** to the versions embedded in the builder — they are extracted directly from the same here-strings. When the builder runs, it writes these same scripts into `01_Triage\windows\` and `01_Triage\linux\` on the USB.
+
+### How the scripts behave
+
+All scripts are designed to be run **directly from the USB**. They share two key behaviours:
+
+1. **Output goes to the USB, never to the suspect host's disk.** Each script computes a default output path of `$PSScriptRoot\..\..\07_Evidence\` (two levels up from its folder in `01_Triage\windows\` or `01_Triage\linux\`), pointing at `07_Evidence\` on the USB. You can override this with the `-OutputPath` parameter.
+
+2. **They do not install anything.** All scripts are self-contained — no dependencies, no modules, no internet access required on the incident scene.
+
+See the [01 · Triage Scripts](#01--triage-scripts) section above for full usage documentation and expected output for each script.
+
+---
+
+## Build Report
+
+After every build, the builder writes two report files to `00_START_HERE\`:
+
+| File | Format | Purpose |
+|---|---|---|
+| `BUILD_REPORT.html` | HTML (browser) | Full colour-coded report — open in any browser |
+| `BUILD_REPORT.txt` | Plain text | Plain-text copy for documentation, archiving, or no-GUI environments |
+
+### What the report contains
+
+Each downloaded file gets a row with:
+
+| Column | Description |
+|---|---|
+| **Tool** | Tool name as shown in the builder |
+| **Status** | `OK` (green), `FAIL` (red), or `SKIP` (grey — file already present, not re-downloaded) |
+| **Version** | Version string resolved from the GitHub API (where applicable) |
+| **File** | Filename saved to the USB |
+| **SHA-256** | Hash of the downloaded file — use this for chain-of-custody verification |
+| **Signed** | Authenticode signature status for PE files (`.exe`, `.dll`, `.sys`, `.msi`) |
+
+### Signed column
+
+The **Signed** column shows the result of `Get-AuthenticodeSignature` on each downloaded PE file. The format is:
+
+```
+Signed · <Signer CN> · <Algorithm>
+```
+
+For example:
+- `Signed · Microsoft Corporation · sha256RSA`
+- `Signed · Sophos Limited · sha256RSA`
+- `Not signed`
+- `Invalid (hash mismatch)`
+
+A `FAIL` status in the build report means the file could not be downloaded (network error, API failure, or URL changed). Re-run the builder with no flags to retry only missing files — any file that downloaded successfully is skipped automatically.
 
 ---
 
