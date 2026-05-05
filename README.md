@@ -61,14 +61,14 @@ A self-contained PowerShell builder that downloads, organises, and embeds a comp
 
 The IR JumpKit Builder (`Build-IRJumpkit.ps1`) is a **single PowerShell script** that builds an entire Incident Response USB toolkit from scratch. When you run it against a USB drive (or any target folder), it:
 
-1. Runs pre-flight checks (admin rights, internet, disk space)
+1. Runs pre-flight checks (rights, internet, disk space)
 2. Creates a clean, numbered folder structure
 3. Downloads the latest version of every tool directly from authoritative sources (GitHub releases, vendor CDNs, Sysinternals)
-4. Embeds ready-to-run IR scripts for Windows and Linux — no internet needed on the incident scene
+4. Embeds ready-to-run IR scripts for Windows and Linux, no internet needed on the incident scene
 5. Writes quick-start notes, cheatsheets, and an IOC template
-6. Generates a full HTML + text build report with SHA-256 hashes of everything downloaded
+6. Generates a full HTML + text build report with SHA-256 hashes and signatures of everything downloaded
 
-The result is a **self-documenting, auditable USB kit** with everything you need from memory acquisition to log analysis, from initial triage to host isolation — all pre-staged and ready to run.
+The result is a **self-documenting, auditable USB kit** with everything you need from memory acquisition to log analysis, from initial triage to host isolation, all pre-staged and ready to run.
 
 ---
 
@@ -88,7 +88,7 @@ You don't need to manually hunt down tools, remember versions, or maintain a sha
 
 ### Antivirus Detections
 
-Several tools in this kit — particularly **YARA rules**, **Sigma detection files** (used by Hayabusa/Chainsaw), and **memory acquisition binaries** — describe or interact with malicious behaviour patterns. Your antivirus **may flag or quarantine individual files** during or after the build. This is a **false positive** and is expected behaviour.
+Several tools in this kit, particularly **YARA rules**, **Sigma detection files**, and some **memory acquisition binaries**, describe or interact with malicious behaviour patterns. Your antivirus **may flag or quarantine individual files** during or after the build. This is a **false positive** and is expected behaviour. The script executes 2 PE files (Wireshark, and 7Zip) **IF and only IF** the user selects Yes n the beginning of the installation.
 
 The tools themselves are clean and sourced directly from their official maintainers. You are encouraged to review every download URL in the script and verify hashes against the build report. To avoid interruptions during the build, temporarily exclude the target folder:
 
@@ -100,14 +100,14 @@ Remove-MpPreference -ExclusionPath "E:\IR-Jumpkit"
 
 ### Transparency & Review
 
-This project is fully open and **self-auditable**. The builder is a single `.ps1` file — every download URL, every embedded script, and every file written to disk is visible in plain text. You are encouraged to read it before running it. All downloads come from:
+This project is fully open and **self-auditable**. The builder is a single `.ps1` file, every download URL, every embedded script, and every file written to disk is visible in plain text. You are encouraged to read it before running it. All downloads come from:
 
 - Official GitHub releases (GitHub API — no hardcoded version pins)
 - Sysinternals / Microsoft CDN
 - Sophos (HitmanPro) and Malwarebytes (AdwCleaner) via BleepingComputer's download infrastructure
 - Official vendor sites (Wireshark, PuTTY, NirSoft)
 
-The build report includes SHA-256 hashes for every downloaded file for chain-of-custody purposes.
+The build report includes SHA-256 hashes for every downloaded file for chain-of-custody purposes, and highlight signed files.
 
 ### Defensive Use Only
 
@@ -196,7 +196,7 @@ IR-Jumpkit/
 │
 ├── 02_Forensics/
 │   ├── memory/
-│   │   ├── go-winpmem_amd64_*_signed.exe  ← Full signed build (recommended)
+│   │   ├── go-winpmem_amd64_*_signed.exe  ← Full build (The authors of the tool state they can't sign it even though the release name says signed)
 │   │   ├── winpmem_mini_x64.exe           ← Mini signed variant (64-bit, lightweight)
 │   │   ├── winpmem_mini_x86.exe           ← Mini signed variant (32-bit)
 │   │   ├── avml                           ← Linux memory acquisition
