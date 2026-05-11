@@ -5,7 +5,7 @@
     Fast volatile triage: run this FIRST on a live Windows host.
 
 .DESCRIPTION
-    Lightweight, fast-running volatile data collector. Completes in ~90 seconds.
+    Lightweight, fast-running volatile data collector. Completes in ~90-120 seconds.
     Captures data that disappears on reboot:
       - Running processes (tree, cmdlines, hashes, unsigned modules)
       - Network connections mapped to owning processes
@@ -14,6 +14,7 @@
       - Persistence (Run keys, tasks, WMI subscriptions, LSA packages, IFEO)
       - Loaded DLLs per process, unsigned module detection
       - Clipboard, PS history, Defender exclusions, env vars
+      - Browser history (Chrome, Edge, Firefox, Brave, Opera, IE) — all user profiles
 
     Run collect_artifacts.ps1 afterwards for full non-volatile collection
     (event logs, registry hives, prefetch, scheduled task XML).
@@ -43,7 +44,7 @@ $Analyst    = $env:USERNAME
 
 # --- Directory setup ----------------------------------------------------------
 foreach ($d in @("01_processes","02_network","03_users_sessions",
-                 "04_services_drivers","05_persistence","06_dlls_modules","07_system")) {
+                 "04_services_drivers","05_persistence","06_dlls_modules","07_system","08_browser_history")) {
     New-Item -ItemType Directory -Force -Path "$OutputPath\$d" | Out-Null
 }
 
@@ -349,9 +350,92 @@ Out-Triage "07_system\installed_software.txt" {
         Sort-Object InstallDate -Descending | Format-Table -AutoSize
 }
 
+# --- 08  Browser History ------------------------------------------------------
+Write-Log "[ 08 ] Browser history"
+
+function Copy-BrowserDb {
+    param([string]$SrcFile, [string]$DstDir, [string]$Label)
+    if (-not (Test-Path $SrcFile)) { return $false }
+    New-Item -ItemType Directory -Force -Path $DstDir | Out-Null
+    $srcDir  = Split-Path $SrcFile -Parent
+    $srcName = Split-Path $SrcFile -Leaf
+    $dstFile = Join-Path $DstDir $srcName
+    & robocopy $srcDir $DstDir $srcName /B /R:1 /W:0 /NP /NJH /NJS 2>$null | Out-Null
+    if (-not (Test-Path $dstFile)) {
+        Write-Log "    SKIP $Label : file locked or unreadable" "WARN"
+        return $false
+    }
+    # SQLite stores strings as UTF-8 internally — readable via binary scan
+    $raw  = [System.IO.File]::ReadAllText($dstFile, [System.Text.Encoding]::GetEncoding('iso-8859-1'))
+    $urls = [regex]::Matches($raw, 'https?://[^\x00-\x1F\x7F\s"<>]{8,}') |
+            ForEach-Object { $_.Value } | Sort-Object -Unique
+    $quickTxt = Join-Path $DstDir "${Label}_urls_quick.txt"
+    "# Quick URL scan from $Label (open raw SQLite with DB Browser for full history)" | Out-File $quickTxt -Encoding UTF8
+    $urls | Add-Content $quickTxt
+    Write-Log "    OK   $Label — $($urls.Count) unique URLs" "OK"
+    return $true
+}
+
+$UserProfiles = Get-ChildItem "C:\Users" -Directory |
+    Where-Object { $_.Name -notmatch "^(Public|Default|Default User|All Users)$" }
+
+foreach ($prof in $UserProfiles) {
+    $uname   = $prof.Name
+    $local   = "$($prof.FullName)\AppData\Local"
+    $roaming = "$($prof.FullName)\AppData\Roaming"
+    $bhUser  = "$OutputPath\08_browser_history\$uname"
+    $found   = 0
+
+    Write-Log "  Profile: $uname"
+
+    # Chrome
+    Get-ChildItem "$local\Google\Chrome\User Data" -Directory 2>$null |
+        Where-Object { $_.Name -match "^(Default|Profile)" } | ForEach-Object {
+            if (Copy-BrowserDb "$($_.FullName)\History" "$bhUser\chrome\$($_.Name)" "chrome") { $found++ }
+        }
+    # Edge (Chromium)
+    Get-ChildItem "$local\Microsoft\Edge\User Data" -Directory 2>$null |
+        Where-Object { $_.Name -match "^(Default|Profile)" } | ForEach-Object {
+            if (Copy-BrowserDb "$($_.FullName)\History" "$bhUser\edge\$($_.Name)" "edge") { $found++ }
+        }
+    # Brave
+    Get-ChildItem "$local\BraveSoftware\Brave-Browser\User Data" -Directory 2>$null |
+        Where-Object { $_.Name -match "^(Default|Profile)" } | ForEach-Object {
+            if (Copy-BrowserDb "$($_.FullName)\History" "$bhUser\brave\$($_.Name)" "brave") { $found++ }
+        }
+    # Opera GX / Opera Stable
+    if (Copy-BrowserDb "$roaming\Opera Software\Opera GX Stable\History" "$bhUser\opera_gx" "opera_gx") { $found++ }
+    if (Copy-BrowserDb "$roaming\Opera Software\Opera Stable\History"    "$bhUser\opera"    "opera")    { $found++ }
+    # Firefox
+    Get-ChildItem "$roaming\Mozilla\Firefox\Profiles" -Directory 2>$null |
+        Where-Object { $_.Name -match "\.default" } | ForEach-Object {
+            if (Copy-BrowserDb "$($_.FullName)\places.sqlite" "$bhUser\firefox\$($_.Name)" "firefox") { $found++ }
+        }
+
+    # IE / Edge Legacy TypedURLs — resolve SID via ProfileList then read HKU hive
+    $sidKey = Get-ChildItem "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" 2>$null |
+              Where-Object { (Get-ItemProperty $_.PSPath -EA SilentlyContinue).ProfileImagePath -eq $prof.FullName }
+    if ($sidKey) {
+        $sid    = $sidKey.PSChildName
+        $ieKey  = "Registry::HKEY_USERS\$sid\Software\Microsoft\Internet Explorer\TypedURLs"
+        $ieVals = Get-ItemProperty $ieKey 2>$null
+        if ($ieVals) {
+            New-Item -ItemType Directory -Force -Path $bhUser | Out-Null
+            $ieOut = "$bhUser\ie_typed_urls.txt"
+            "IE / Edge Legacy TypedURLs for $uname" | Out-File $ieOut -Encoding UTF8
+            $ieVals.PSObject.Properties | Where-Object { $_.Name -match "^url" } |
+                ForEach-Object { "$($_.Name): $($_.Value)" } | Add-Content $ieOut
+            Write-Log "    OK   IE TypedURLs for $uname" "OK"
+            $found++
+        }
+    }
+
+    if ($found -eq 0) { Write-Log "  No browser history found for $uname" "WARN" }
+}
+
 # --- Hash manifest ------------------------------------------------------------
 if (-not $SkipHash) {
-    Write-Log "[ 08 ] Hashing output files"
+    Write-Log "[ 09 ] Hashing output files"
     $manifest = "$OutputPath\_hashes.csv"
     "FilePath,SHA256,SizeKB" | Out-File $manifest -Encoding UTF8
     Get-ChildItem -Path $OutputPath -Recurse -File |
