@@ -88,15 +88,9 @@ You don't need to manually hunt down tools, remember versions, or maintain a sha
 
 ### Antivirus Detections
 
-Several tools in this kit, particularly **YARA rules**, **Sigma detection files**, and some **memory acquisition binaries**, describe or interact with malicious behaviour patterns. Your antivirus **may flag or quarantine individual files** during or after the build. This is a **false positive** and is expected behaviour. The script executes 2 PE files (Wireshark, and 7Zip) **IF and only IF** the user selects Yes n the beginning of the installation.
+Some tools in this kit, particularly **YARA rules**, **Sigma detection files**, and some **memory acquisition binaries**, describe or interact with malicious behaviour patterns. Your antivirus **may flag or quarantine individual files** during or after the build. This is a **false positive** and is expected behaviour, you are welcome to check everything yourself. The script executes 2 PE files (Wireshark, and 7Zip) **IF and only IF** the user selects Yes n the beginning of the installation.
 
-The tools themselves are clean and sourced directly from their official maintainers. You are encouraged to review every download URL in the script and verify hashes against the build report. To avoid interruptions during the build, temporarily exclude the target folder:
-
-```powershell
-Add-MpPreference -ExclusionPath "E:\IR-Jumpkit"
-# Remove after build:
-Remove-MpPreference -ExclusionPath "E:\IR-Jumpkit"
-```
+The tools themselves are clean and sourced directly from their official maintainers. You are encouraged to review every download URL in the script and verify hashes against the build report.
 
 ### Transparency & Review
 
@@ -107,7 +101,7 @@ This project is fully open and **self-auditable**. The builder is a single `.ps1
 - Sophos (HitmanPro) and Malwarebytes (AdwCleaner) via BleepingComputer's download infrastructure
 - Official vendor sites (Wireshark, PuTTY, NirSoft)
 
-The build report includes SHA-256 hashes for every downloaded file for chain-of-custody purposes, and highlight signed files.
+The build report includes SHA-256 hashes for every downloaded file for integrity verification purposes, and highlight signed files.
 
 ### Defensive Use Only
 
