@@ -56,6 +56,7 @@ A self-contained PowerShell builder that downloads, organises, and embeds a comp
 - [Standalone Scripts (Repository)](#standalone-scripts-repository)
 - [Tool Download URLs](#tool-download-urls)
 - [Build Report](#build-report)
+- [Builder Integrity](#builder-integrity)
 
 ---
 
@@ -953,6 +954,28 @@ For example:
 - `Invalid (hash mismatch)`
 
 A `FAIL` status in the build report means the file could not be downloaded (network error, API failure, or URL changed). Re-run the builder with no flags to retry only missing files — any file that downloaded successfully is skipped automatically.
+
+---
+
+## Builder Integrity
+
+Before running the builder on a real engagement, verify it has not been tampered with by checking its SHA-256 hash against the value below.
+
+| File | SHA-256 |
+|------|---------|
+| `Build-IRJumpkit.ps1` | `0CB25DB3DD0693411B0132D0BBCE79AD003A34C2B8CFA6AB99CFDDEDBBCF95D7` |
+
+**Verify in PowerShell:**
+```powershell
+Get-FileHash .\Build-IRJumpkit.ps1 -Algorithm SHA256
+```
+
+**Verify in cmd:**
+```cmd
+certutil -hashfile Build-IRJumpkit.ps1 SHA256
+```
+
+> ⚠️ If the hash does not match, do not run the script. Re-download from the official repository and verify again.
 
 ---
 
