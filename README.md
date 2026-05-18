@@ -19,6 +19,7 @@ A self-contained PowerShell builder that downloads, organises, and embeds a comp
 - [USB Structure](#usb-structure)
 - [Tool Reference](#tool-reference)
   - [01 · Triage Scripts](#01--triage-scripts)
+    - [prevent\_lock.bat / restore\_lock.bat](#prevent_lockbat--restore_lockbat)
     - [triage\_collect.ps1](#triage_collectps1)
     - [collect\_artifacts.ps1](#collect_artifactsps1)
     - [isolate\_host.ps1](#isolate_hostps1)
@@ -53,6 +54,7 @@ A self-contained PowerShell builder that downloads, organises, and embeds a comp
 - [Order of Operations](#order-of-operations)
 - [Evidence Folder](#evidence-folder)
 - [Standalone Scripts (Repository)](#standalone-scripts-repository)
+- [Tool Download URLs](#tool-download-urls)
 - [Build Report](#build-report)
 
 ---
@@ -876,6 +878,41 @@ All scripts are designed to be run **directly from the USB**. They share two key
 2. **They do not install anything.** All scripts are self-contained — no dependencies, no modules, no internet access required on the incident scene.
 
 See the [01 · Triage Scripts](#01--triage-scripts) section above for full usage documentation and expected output for each script.
+
+---
+
+## Tool Download URLs
+
+All tools are downloaded directly from their official, vendor-controlled sources — no third-party mirrors. Tools marked **GitHub Latest** are resolved at build time via the GitHub Releases API (`/releases/latest`) so the builder always fetches the most recent version; the URL shown is the releases page.
+
+| # | Tool | Category | USB Location | Download URL |
+|---|------|----------|-------------|-------------|
+| 1 | **winpmem** (full signed) | Memory | `02_Forensics\memory\` | https://github.com/Velocidex/WinPmem/releases/latest *(GitHub Latest)* |
+| 2 | **winpmem_mini** x64 | Memory | `02_Forensics\memory\` | https://github.com/Velocidex/WinPmem/releases/latest *(GitHub Latest)* |
+| 3 | **winpmem_mini** x86 | Memory | `02_Forensics\memory\` | https://github.com/Velocidex/WinPmem/releases/latest *(GitHub Latest)* |
+| 4 | **avml** (Linux memory acquisition) | Memory | `02_Forensics\memory\avml` | https://github.com/microsoft/avml/releases/latest *(GitHub Latest)* |
+| 5 | **LiME** (Linux kernel module source) | Memory | `02_Forensics\memory\LiME\` | https://github.com/504ensicsLabs/LiME *(git clone)* |
+| 6 | **Velociraptor** | Forensics | `02_Forensics\artefacts\Velociraptor\` | https://github.com/Velocidex/velociraptor/releases/latest *(GitHub Latest)* |
+| 7 | **Wireshark + tshark** | Network | `03_Network\Wireshark\` | https://www.wireshark.org/download/win64/Wireshark-latest-x64.exe |
+| 8 | **Process Monitor (ProcMon)** | Malware | `04_Malware\ProcMon\` | https://download.sysinternals.com/files/ProcessMonitor.zip |
+| 9 | **Autoruns** | Malware | `04_Malware\Autoruns\` | https://download.sysinternals.com/files/Autoruns.zip |
+| 10 | **YARA** engine (Windows) | Malware | `04_Malware\yara\bin\` | https://github.com/VirusTotal/yara/releases/latest *(GitHub Latest)* |
+| 11 | **YARA rules** (Neo23x0 signature-base) | Malware | `04_Malware\yara\rules\` | https://github.com/Neo23x0/signature-base *(git clone)* |
+| 12 | **HitmanPro** 64-bit (Sophos) | Malware | `04_Malware\HitmanPro\` | https://www.bleepingcomputer.com/download/hitmanpro/dl/176/ |
+| 13 | **HitmanPro** 32-bit (Sophos) | Malware | `04_Malware\HitmanPro\` | https://www.bleepingcomputer.com/download/hitmanpro/dl/175/ |
+| 14 | **RootkitRevealer** (Sysinternals) | Malware | `04_Malware\RootkitRevealer\` | https://download.sysinternals.com/files/RootkitRevealer.zip |
+| 15 | **Malwarebytes Anti-Malware** | Malware | `04_Malware\Malwarebytes\` | https://downloads.malwarebytes.com/file/mb-windows |
+| 16 | **AdwCleaner** (Malwarebytes) | Malware | `04_Malware\AdwCleaner\` | https://www.bleepingcomputer.com/download/adwcleaner/dl/382/ |
+| 17 | **Chainsaw** | Logs | `05_Logs\Chainsaw\` | https://github.com/WithSecureLabs/chainsaw/releases/latest *(GitHub Latest)* |
+| 18 | **7-Zip** | Utils | `06_Utils\7zip\` | https://github.com/ip7z/7zip/releases/latest *(GitHub Latest)* |
+| 19 | **CyberChef** (offline) | Utils | `06_Utils\CyberChef\` | https://github.com/gchq/CyberChef/releases/latest *(GitHub Latest)* |
+| 20 | **jq** (Windows) | Utils | `06_Utils\jq\` | https://github.com/jqlang/jq/releases/latest *(GitHub Latest)* |
+| 21 | **jq** (Linux) | Utils | `06_Utils\jq\` | https://github.com/jqlang/jq/releases/latest *(GitHub Latest)* |
+| 22 | **PuTTY** | Utils | `06_Utils\putty\` | https://the.earth.li/~sgtatham/putty/latest/w64/putty.exe |
+| 23 | **PSCP** (PuTTY SCP client) | Utils | `06_Utils\putty\` | https://the.earth.li/~sgtatham/putty/latest/w64/pscp.exe |
+| 24 | **HashMyFiles** (NirSoft) | Utils | `06_Utils\HashMyFiles\` | https://www.nirsoft.net/utils/hashmyfiles-x64.zip |
+
+> **Note:** Every downloaded file is SHA-256 hashed and recorded in the build report. For GitHub Latest tools the resolved version and exact binary URL are logged at build time so you can reproduce the exact kit later.
 
 ---
 
